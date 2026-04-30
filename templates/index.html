@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FLUX.2 Klein — Chat</title>
+<link rel="stylesheet" href="/static/chat.css" />
+</head>
+<body>
+<aside>
+  <div class="sidebar-header">
+    <h1>SESSIONS</h1>
+    <button class="new-btn" id="new-session-btn">+ New</button>
+  </div>
+  <div class="session-list" id="session-list"></div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <input type="text" id="session-name" placeholder="Session name" disabled />
+    <button class="config-toggle" id="config-toggle">Config</button>
+    <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode">&#9728;&#65038;</button>
+  </div>
+  <div class="config-panel" id="config-panel">
+    <label>Model
+      <select id="cfg-model">
+        {% for m in models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Steps <input type="number" id="cfg-steps" min="1" max="50" /></label>
+    <label>Guidance <input type="number" id="cfg-guidance" step="0.1" min="0" max="20" /></label>
+    <label>Seed <input type="number" id="cfg-seed" /></label>
+    <label>Width <input type="number" id="cfg-width" step="64" min="256" max="2048" /></label>
+    <label>Height <input type="number" id="cfg-height" step="64" min="256" max="2048" /></label>
+  </div>
+  <div class="chat" id="chat">
+    <div class="empty">Create a new session to get started.</div>
+  </div>
+  <div class="composer">
+    <div class="pending-uploads" id="pending-uploads"></div>
+    <div class="toggle-row">
+      <label><input type="checkbox" id="chain-output" checked /> Use last output as input when no image is attached</label>
+    </div>
+    <div class="composer-row">
+      <button class="icon-btn" id="attach-btn" title="Attach image(s)">📎</button>
+      <input type="file" id="file-input" accept="image/*" multiple style="display:none" />
+      <textarea id="prompt-input" placeholder="Describe an image, or attach one and describe an edit…" rows="1"></textarea>
+      <button class="send-btn" id="send-btn">Send</button>
+    </div>
+  </div>
+</main>
+
+<script>const DEFAULTS = {{ defaults | tojson }};</script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

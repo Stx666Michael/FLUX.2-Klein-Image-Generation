@@ -1,21 +1,6 @@
 import argparse
-import torch
-from diffusers import Flux2KleinPipeline
-from diffusers.utils import load_image
-from huggingface_hub import get_token
 
-# ---------------------------------------------------------------------------
-# Available models — Klein models use Flux2KleinPipeline with a built-in
-# text encoder and run fully on-device.
-# ---------------------------------------------------------------------------
-MODELS = {
-    "flux2-klein-4b": {"repo": "black-forest-labs/FLUX.2-klein-4B"},
-    "flux2-klein-9b": {"repo": "black-forest-labs/FLUX.2-klein-9B"},
-}
-
-DEFAULTS = {"steps": 4, "guidance": 1.0, "dtype": torch.float16}
-
-device = "mps"
+from generator import DEFAULTS, MODELS, generate
 
 
 def parse_args():
@@ -40,8 +25,9 @@ def parse_args():
     )
     parser.add_argument("--steps",    type=int,   default=None,  help="Number of inference steps (default: 4)")
     parser.add_argument("--guidance", type=float, default=None,  help="Guidance scale (default: 1.0)")
-    parser.add_argument("--seed",     type=int,   default=42,    help="Random seed")
-    parser.add_argument("--size",     type=int,   default=1024,  help="Image size in pixels (width and height, default: 1024)")
+    parser.add_argument("--seed",     type=int,   default=DEFAULTS["seed"], help="Random seed")
+    parser.add_argument("--width",    type=int,   default=DEFAULTS["width"],  help="Output image width in pixels (default: 1024)")
+    parser.add_argument("--height",   type=int,   default=DEFAULTS["height"], help="Output image height in pixels (default: 1024)")
     parser.add_argument("--image",    type=str,   nargs="+",     help="One or more input images for editing (local path or URL)")
     parser.add_argument("--output",   type=str,   default=None,  help="Output file path (default: <model>.png)")
     return parser.parse_args()
@@ -53,29 +39,23 @@ def main():
     steps    = args.steps    if args.steps    is not None else DEFAULTS["steps"]
     guidance = args.guidance if args.guidance is not None else DEFAULTS["guidance"]
     output_path = args.output or f"{args.model}.png"
-
-    input_images = [load_image(p) for p in args.image] if args.image else None
-    mode = "edit" if input_images else "generate"
+    mode = "edit" if args.image else "generate"
 
     print(f"Model  : {args.model} ({repo_id})")
-    print(f"Mode   : {mode}{f' ({len(input_images)} input image(s))' if input_images else ''}")
-    print(f"Steps  : {steps}  |  Guidance: {guidance}  |  Seed: {args.seed}  |  Size: {args.size}x{args.size}")
+    print(f"Mode   : {mode}{f' ({len(args.image)} input image(s))' if args.image else ''}")
+    print(f"Steps  : {steps}  |  Guidance: {guidance}  |  Seed: {args.seed}  |  Size: {args.width}x{args.height}")
     print(f"Output : {output_path}")
 
-    pipe = Flux2KleinPipeline.from_pretrained(
-        repo_id, torch_dtype=DEFAULTS["dtype"], token=get_token()
-    )
-    pipe.enable_model_cpu_offload()  # offload layers to CPU to fit in 24 GB unified RAM
-
-    image = pipe(
+    image = generate(
+        model=args.model,
         prompt=args.prompt,
-        image=input_images,
-        height=args.size,
-        width=args.size,
-        guidance_scale=guidance,
-        num_inference_steps=steps,
-        generator=torch.Generator(device=device).manual_seed(args.seed),
-    ).images[0]
+        images=args.image,
+        steps=steps,
+        guidance=guidance,
+        seed=args.seed,
+        width=args.width,
+        height=args.height,
+    )
 
     image.save(output_path)
     print(f"Saved to {output_path}")

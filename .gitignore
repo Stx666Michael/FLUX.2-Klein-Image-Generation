@@ -1,4 +1,6 @@
 venv/
 input/
 output/
+sessions/
 .DS_Store
+__pycache__/

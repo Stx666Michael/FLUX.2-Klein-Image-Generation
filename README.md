@@ -1,6 +1,6 @@
-# FLUX.2 Klein Image Generation
+# FLUX.2 Klein Image Generation & Editing
 
-Local image generation using [FLUX.2 Klein](https://huggingface.co/black-forest-labs) models on Apple Silicon (MPS).
+Local image generation and editing using [FLUX.2 Klein](https://huggingface.co/black-forest-labs) models on Apple Silicon (MPS).
 
 ## Requirements
 
@@ -29,8 +29,26 @@ You must also accept the model license on HuggingFace before downloading:
 ## Usage
 
 ```bash
-python main.py [--model MODEL] [--prompt TEXT] [--size PX] [--steps N] [--guidance F] [--seed N] [--output PATH]
+python main.py [--model MODEL] [--prompt TEXT] [--image PATH ...] [--size PX] [--steps N] [--guidance F] [--seed N] [--output PATH]
 ```
+
+### Web UI
+
+A small chat-style web UI is also available. It supports multiple sessions
+(each with its own model/steps/guidance/seed/size), accepts text or
+text-with-uploaded-image inputs, returns the generated image as the reply,
+and persists every session under `sessions/` so they reload on next launch.
+
+```bash
+pip install -r requirements.txt   # installs Flask
+python app.py                     # http://127.0.0.1:5000
+python app.py --host 0.0.0.0 --port 8000   # expose on the LAN
+```
+
+When no image is attached, by default the UI feeds the previous generated
+output back in as the input image, letting you iterate on a result by chatting.
+Untick the toggle in the composer to disable that and do pure text-to-image
+on every turn.
 
 ### Options
 
@@ -38,13 +56,14 @@ python main.py [--model MODEL] [--prompt TEXT] [--size PX] [--steps N] [--guidan
 |---|---|---|
 | `--model` | `flux2-klein-4b` | `flux2-klein-4b` or `flux2-klein-9b` |
 | `--prompt` | *(hermit crab scene)* | Text prompt |
+| `--image` | *(none)* | One or more input images for editing (local path or URL) |
 | `--size` | `1024` | Output image size in pixels (square) |
 | `--steps` | `4` | Number of inference steps |
 | `--guidance` | `1.0` | Guidance scale |
 | `--seed` | `42` | Random seed for reproducibility |
 | `--output` | `<model>.png` | Output file path |
 
-### Examples
+### Text-to-Image
 
 ```bash
 # Quick run with 4B model at 512px (faster, less memory)
@@ -58,6 +77,21 @@ python main.py --model flux2-klein-4b --prompt "A futuristic city at sunset, cin
 
 # More inference steps for higher quality
 python main.py --model flux2-klein-9b --steps 8 --size 768 --output output/hq.png
+```
+
+### Image Editing
+
+Pass one or more images with `--image` to use them as reference context. The model will edit or transform them according to the prompt.
+
+```bash
+# Edit a local image
+python main.py --image photo.jpg --prompt "Make it look like a painting"
+
+# Edit using a URL
+python main.py --image https://example.com/cat.jpg --prompt "Add a hat to the cat"
+
+# Multi-image reference (compose from multiple images)
+python main.py --image img1.png img2.png --prompt "Combine these two scenes into one"
 ```
 
 ## Model Cache
