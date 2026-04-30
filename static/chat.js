@@ -5,6 +5,7 @@ const state = {
   pendingFiles: [],
   busy: false,
   generating: null, // { sid, step, total } while a generation is in flight
+  editingMsgId: null, // message id being edited (rewind target)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -143,6 +144,21 @@ function renderMessage(m) {
         `<img src="/api/sessions/${sid}/files/${encodeURIComponent(n)}" />`).join("")}</div>`;
     }
     el.innerHTML = `<div class="bubble">${escapeHtml(m.text || "")}${thumbs}</div>`;
+    if (m.id) {
+      const editBtn = document.createElement("button");
+      editBtn.className = "edit-btn";
+      editBtn.title = "Edit and resend";
+      editBtn.textContent = "✎";
+      editBtn.addEventListener("click", () => {
+        state.editingMsgId = m.id;
+        $("prompt-input").value = m.text || "";
+        $("prompt-input").style.height = "auto";
+        $("prompt-input").style.height = Math.min($("prompt-input").scrollHeight, 200) + "px";
+        $("prompt-input").focus();
+        $("send-btn").textContent = "Resend";
+      });
+      el.appendChild(editBtn);
+    }
   } else {
     if (m.error) {
       el.innerHTML = `<div class="bubble err">⚠ ${escapeHtml(m.error)}</div>`;
@@ -192,12 +208,21 @@ async function sendMessage() {
   fd.append("prompt", prompt);
   for (const f of state.pendingFiles) fd.append("images", f);
   if ($("chain-output").checked) fd.append("use_last_output", "1");
+  if (state.editingMsgId) fd.append("rewind_to", state.editingMsgId);
 
   state.busy = true;
   $("send-btn").disabled = true;
+  $("send-btn").textContent = "Send";
   $("prompt-input").value = "";
   state.pendingFiles = [];
   renderPendingUploads();
+
+  // Truncate local messages optimistically if rewinding.
+  if (state.editingMsgId) {
+    const idx = state.current.messages.findIndex(m => m.id === state.editingMsgId);
+    if (idx !== -1) state.current.messages = state.current.messages.slice(0, idx);
+  }
+  state.editingMsgId = null;
 
   const optimistic = { role: "user", text: prompt, images: [] };
   state.current.messages.push(optimistic);
@@ -229,9 +254,11 @@ async function sendMessage() {
     state.current.messages.pop();
     if (data.user) state.current.messages.push(data.user);
     if (data.assistant) state.current.messages.push(data.assistant);
+    state.generating = null;
     renderChat();
     await loadSessions();
   } catch (e) {
+    state.generating = null;
     alert("Generation failed: " + e.message);
   } finally {
     clearInterval(pollTimer);
@@ -273,6 +300,11 @@ $("prompt-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
+  }
+  if (e.key === "Escape" && state.editingMsgId) {
+    state.editingMsgId = null;
+    $("prompt-input").value = "";
+    $("send-btn").textContent = "Send";
   }
 });
 $("prompt-input").addEventListener("input", (e) => {

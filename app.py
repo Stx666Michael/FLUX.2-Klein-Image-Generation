@@ -216,13 +216,25 @@ def api_get_file(sid, filename):
 @app.post("/api/sessions/<sid>/messages")
 def api_send_message(sid):
     """Send a user message. Form fields:
-        prompt   (required, str)
-        images   (optional, multiple file uploads)
+        prompt         (required, str)
+        images         (optional, multiple file uploads)
         use_last_output (optional, "1" to chain previous output as input)
+        rewind_to      (optional, message id — truncate from that message onward)
     Returns the appended user message + generated assistant message.
     """
     data = _load_session(sid)
     sdir = _session_path(sid)
+
+    prompt = (request.form.get("prompt") or "").strip()
+    if not prompt:
+        abort(400, "prompt is required")
+
+    # Rewind: drop the target message and everything after it.
+    rewind_to = (request.form.get("rewind_to") or "").strip()
+    if rewind_to:
+        idx = next((i for i, m in enumerate(data["messages"]) if m.get("id") == rewind_to), None)
+        if idx is not None:
+            data["messages"] = data["messages"][:idx]
 
     prompt = (request.form.get("prompt") or "").strip()
     if not prompt:
