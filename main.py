@@ -1,6 +1,7 @@
 import argparse
 import torch
 from diffusers import Flux2KleinPipeline
+from diffusers.utils import load_image
 from huggingface_hub import get_token
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,7 @@ def parse_args():
     parser.add_argument("--guidance", type=float, default=None,  help="Guidance scale (default: 1.0)")
     parser.add_argument("--seed",     type=int,   default=42,    help="Random seed")
     parser.add_argument("--size",     type=int,   default=1024,  help="Image size in pixels (width and height, default: 1024)")
+    parser.add_argument("--image",    type=str,   nargs="+",     help="One or more input images for editing (local path or URL)")
     parser.add_argument("--output",   type=str,   default=None,  help="Output file path (default: <model>.png)")
     return parser.parse_args()
 
@@ -52,7 +54,11 @@ def main():
     guidance = args.guidance if args.guidance is not None else DEFAULTS["guidance"]
     output_path = args.output or f"{args.model}.png"
 
+    input_images = [load_image(p) for p in args.image] if args.image else None
+    mode = "edit" if input_images else "generate"
+
     print(f"Model  : {args.model} ({repo_id})")
+    print(f"Mode   : {mode}{f' ({len(input_images)} input image(s))' if input_images else ''}")
     print(f"Steps  : {steps}  |  Guidance: {guidance}  |  Seed: {args.seed}  |  Size: {args.size}x{args.size}")
     print(f"Output : {output_path}")
 
@@ -63,6 +69,7 @@ def main():
 
     image = pipe(
         prompt=args.prompt,
+        image=input_images,
         height=args.size,
         width=args.size,
         guidance_scale=guidance,
