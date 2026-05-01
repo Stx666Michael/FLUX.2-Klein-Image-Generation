@@ -109,10 +109,7 @@ def _new_session(name: str, config: dict) -> dict:
 
 def _normalize_config(cfg: Optional[dict]) -> dict:
     cfg = cfg or {}
-    # On CUDA (e.g. Colab) default to the NF4 quantized model to save memory.
-    from generator import DEVICE as _DEVICE
-    _default_model = "flux2-klein-4b-nf4" if _DEVICE == "cuda" else "flux2-klein-4b"
-    model = cfg.get("model") or _default_model
+    model = cfg.get("model", "flux2-klein-4b")
     if model not in MODELS:
         abort(400, f"unknown model: {model}")
     return {

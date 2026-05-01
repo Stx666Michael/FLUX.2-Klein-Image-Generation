@@ -19,12 +19,8 @@ from PIL import Image
 # text encoder and run fully on-device.
 # ---------------------------------------------------------------------------
 MODELS = {
-    # Standard float16 variants (good for MPS / high-VRAM CUDA)
     "flux2-klein-4b": {"repo": "black-forest-labs/FLUX.2-klein-4B"},
     "flux2-klein-9b": {"repo": "black-forest-labs/FLUX.2-klein-9B"},
-    # Quantized variants — significantly lower VRAM/RAM (CUDA only)
-    "flux2-klein-4b-nf4": {"repo": "black-forest-labs/FLUX.2-klein-4B", "quantize": "nf4"},
-    "flux2-klein-4b-int8": {"repo": "black-forest-labs/FLUX.2-klein-4B", "quantize": "int8"},
 }
 
 DEFAULTS = {"steps": 4, "guidance": 1.0, "width": 1024, "height": 1024, "seed": 42, "dtype": torch.float16}
@@ -43,58 +39,27 @@ DEVICE = _pick_device()
 # Cache a single pipeline instance across calls (UI keeps it warm between
 # messages; CLI uses it once per invocation).
 _pipe = None
-_pipe_key: Optional[str] = None
+_pipe_repo: Optional[str] = None
 _pipe_lock = threading.Lock()
-
-
-def _make_bnb_config(quantize: str):
-    """Return a BitsAndBytesConfig for the requested quantization level.
-
-    Requires ``bitsandbytes`` and a CUDA device.  ``quantize`` must be
-    ``'nf4'`` (4-bit NormalFloat, ~2 GB for 4B) or ``'int8'`` (~4 GB for 4B).
-    """
-    try:
-        from diffusers import BitsAndBytesConfig as BnbConfig
-    except ImportError:
-        from transformers import BitsAndBytesConfig as BnbConfig  # type: ignore[assignment]
-    if quantize == "nf4":
-        return BnbConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-    if quantize == "int8":
-        return BnbConfig(load_in_8bit=True)
-    raise ValueError(f"Unknown quantize value: {quantize!r}")
 
 
 def get_pipeline(model_key: str) -> Flux2KleinPipeline:
     """Return a cached pipeline for ``model_key``, loading/swapping if needed."""
-    global _pipe, _pipe_key
+    global _pipe, _pipe_repo
     if model_key not in MODELS:
         raise ValueError(f"Unknown model: {model_key}. Choices: {list(MODELS)}")
-    model_cfg = MODELS[model_key]
-    repo_id = model_cfg["repo"]
-    # bitsandbytes requires CUDA; silently drop quantize on other devices.
-    quantize = model_cfg.get("quantize") if DEVICE == "cuda" else None
-    cache_key = f"{repo_id}:{quantize}"
+    repo_id = MODELS[model_key]["repo"]
     with _pipe_lock:
-        if _pipe is None or _pipe_key != cache_key:
+        if _pipe is None or _pipe_repo != repo_id:
             # Drop any prior pipeline before loading a new one.
             _pipe = None
-            _pipe_key = None
-            load_kwargs: dict = {"torch_dtype": DEFAULTS["dtype"], "token": get_token()}
-            if quantize:
-                load_kwargs["quantization_config"] = _make_bnb_config(quantize)
-            pipe = Flux2KleinPipeline.from_pretrained(repo_id, **load_kwargs)
-            if quantize:
-                # Quantized model is loaded directly onto the GPU by bitsandbytes;
-                # CPU offload is incompatible with quantized layers.
-                pipe.to(DEVICE)
-            else:
-                pipe.enable_model_cpu_offload()
+            _pipe_repo = None
+            pipe = Flux2KleinPipeline.from_pretrained(
+                repo_id, torch_dtype=DEFAULTS["dtype"], token=get_token()
+            )
+            pipe.enable_model_cpu_offload()
             _pipe = pipe
-            _pipe_key = cache_key
+            _pipe_repo = repo_id
         return _pipe
 
 
