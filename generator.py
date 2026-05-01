@@ -5,15 +5,10 @@ is loaded the same way in both contexts.
 """
 from __future__ import annotations
 
-import gc
-import os
 import threading
 from typing import Iterable, Optional
 
 import torch
-
-# Reduce CUDA allocator fragmentation — must be set before any CUDA allocation.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from diffusers import Flux2KleinPipeline
 from diffusers.utils import load_image
 from huggingface_hub import get_token
@@ -24,8 +19,12 @@ from PIL import Image
 # text encoder and run fully on-device.
 # ---------------------------------------------------------------------------
 MODELS = {
+    # Standard float16 variants (good for MPS / high-VRAM CUDA)
     "flux2-klein-4b": {"repo": "black-forest-labs/FLUX.2-klein-4B"},
     "flux2-klein-9b": {"repo": "black-forest-labs/FLUX.2-klein-9B"},
+    # Quantized variants — significantly lower VRAM/RAM (CUDA only)
+    "flux2-klein-4b-nf4": {"repo": "black-forest-labs/FLUX.2-klein-4B", "quantize": "nf4"},
+    "flux2-klein-4b-int8": {"repo": "black-forest-labs/FLUX.2-klein-4B", "quantize": "int8"},
 }
 
 DEFAULTS = {"steps": 4, "guidance": 1.0, "width": 1024, "height": 1024, "seed": 42, "dtype": torch.float16}
@@ -44,74 +43,58 @@ DEVICE = _pick_device()
 # Cache a single pipeline instance across calls (UI keeps it warm between
 # messages; CLI uses it once per invocation).
 _pipe = None
-_pipe_repo: Optional[str] = None
+_pipe_key: Optional[str] = None
 _pipe_lock = threading.Lock()
+
+
+def _make_bnb_config(quantize: str):
+    """Return a BitsAndBytesConfig for the requested quantization level.
+
+    Requires ``bitsandbytes`` and a CUDA device.  ``quantize`` must be
+    ``'nf4'`` (4-bit NormalFloat, ~2 GB for 4B) or ``'int8'`` (~4 GB for 4B).
+    """
+    try:
+        from diffusers import BitsAndBytesConfig as BnbConfig
+    except ImportError:
+        from transformers import BitsAndBytesConfig as BnbConfig  # type: ignore[assignment]
+    if quantize == "nf4":
+        return BnbConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+    if quantize == "int8":
+        return BnbConfig(load_in_8bit=True)
+    raise ValueError(f"Unknown quantize value: {quantize!r}")
 
 
 def get_pipeline(model_key: str) -> Flux2KleinPipeline:
     """Return a cached pipeline for ``model_key``, loading/swapping if needed."""
-    global _pipe, _pipe_repo
+    global _pipe, _pipe_key
     if model_key not in MODELS:
         raise ValueError(f"Unknown model: {model_key}. Choices: {list(MODELS)}")
-    repo_id = MODELS[model_key]["repo"]
+    model_cfg = MODELS[model_key]
+    repo_id = model_cfg["repo"]
+    # bitsandbytes requires CUDA; silently drop quantize on other devices.
+    quantize = model_cfg.get("quantize") if DEVICE == "cuda" else None
+    cache_key = f"{repo_id}:{quantize}"
     with _pipe_lock:
-        if _pipe is None or _pipe_repo != repo_id:
-            # Drop any prior pipeline and free memory before loading a new one.
+        if _pipe is None or _pipe_key != cache_key:
+            # Drop any prior pipeline before loading a new one.
             _pipe = None
-            _pipe_repo = None
-            gc.collect()
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-
-            if DEVICE == "cuda":
-                # Figure out a VRAM budget that leaves room for inference activations.
-                # The 4B pipeline (transformer + text-encoder + VAE) totals ~14 GB in
-                # fp16 — nearly the full T4 VRAM. device_map="cuda" fills VRAM and
-                # leaves nothing for activations → OOM.
-                #
-                # device_map="auto" with max_memory uses accelerate's meta-device
-                # loader: each weight shard goes directly from disk to its target
-                # device (no staging the full model in CPU RAM). Components that don't
-                # fit in the VRAM budget are placed on CPU and moved to GPU on-demand
-                # via hooks during inference.
-                #
-                # We reserve ~6 GB of VRAM for inference activations; the rest is
-                # available for model weights. CPU cap of 11 GB stays under Colab's
-                # 12 GB system RAM limit.
-                _, total_vram = torch.cuda.mem_get_info()
-                vram_gb = total_vram / 1e9
-                model_vram_budget = max(4.0, vram_gb - 6.0)  # e.g. ~8.5 GB on T4
-
-                pipe = Flux2KleinPipeline.from_pretrained(
-                    repo_id,
-                    torch_dtype=DEFAULTS["dtype"],
-                    token=get_token(),
-                    device_map="auto",
-                    max_memory={0: f"{model_vram_budget:.0f}GiB", "cpu": "11GiB"},
-                )
-                # Attention slicing cuts peak activation VRAM by ~40%.
-                if hasattr(pipe, "enable_attention_slicing"):
-                    pipe.enable_attention_slicing(1)
-                # VAE slicing/tiling keeps decode memory manageable.
-                if hasattr(pipe, "vae") and pipe.vae is not None:
-                    if hasattr(pipe.vae, "enable_slicing"):
-                        pipe.vae.enable_slicing()
-                    if hasattr(pipe.vae, "enable_tiling"):
-                        pipe.vae.enable_tiling()
+            _pipe_key = None
+            load_kwargs: dict = {"torch_dtype": DEFAULTS["dtype"], "token": get_token()}
+            if quantize:
+                load_kwargs["quantization_config"] = _make_bnb_config(quantize)
+            pipe = Flux2KleinPipeline.from_pretrained(repo_id, **load_kwargs)
+            if quantize:
+                # Quantized model is loaded directly onto the GPU by bitsandbytes;
+                # CPU offload is incompatible with quantized layers.
+                pipe.to(DEVICE)
             else:
-                # MPS / CPU: load to CPU then offload to MPS on demand.
-                # device_map is not reliably supported on MPS, so we keep the
-                # original enable_model_cpu_offload() path.
-                pipe = Flux2KleinPipeline.from_pretrained(
-                    repo_id,
-                    torch_dtype=DEFAULTS["dtype"],
-                    token=get_token(),
-                    low_cpu_mem_usage=True,
-                )
                 pipe.enable_model_cpu_offload()
-
             _pipe = pipe
-            _pipe_repo = repo_id
+            _pipe_key = cache_key
         return _pipe
 
 
@@ -161,9 +144,6 @@ def generate(
 
     pipe = get_pipeline(model)
     with _pipe_lock:
-        # Use a CPU generator — when device_map is active diffusers places
-        # tensors itself and a device-specific generator can cause a mismatch.
-        generator = torch.Generator(device="cpu").manual_seed(seed)
         result = pipe(
             prompt=prompt,
             image=input_images,
@@ -171,7 +151,7 @@ def generate(
             width=width,
             guidance_scale=guidance,
             num_inference_steps=steps,
-            generator=generator,
+            generator=torch.Generator(device=DEVICE).manual_seed(seed),
             callback_on_step_end=_step_callback,
         )
     return result.images[0]
